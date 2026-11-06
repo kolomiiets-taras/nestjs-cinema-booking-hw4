@@ -35,10 +35,10 @@ const HALLS = [
 ];
 
 const SHOWINGS = [
-  { film: 0, hall: 0, startsAt: '2027-01-15T18:00:00.000Z', price: 15000 },
-  { film: 1, hall: 1, startsAt: '2027-01-16T16:30:00.000Z', price: 9000 },
-  { film: 2, hall: 0, startsAt: '2027-01-17T19:00:00.000Z', price: 17500 },
-  { film: 0, hall: 1, startsAt: '2027-01-18T12:00:00.000Z', price: 10000 },
+  { film: 0, hall: 0, startsAt: '2027-09-15T18:00:00.000Z', price: 15000 },
+  { film: 1, hall: 1, startsAt: '2027-09-16T16:30:00.000Z', price: 9000 },
+  { film: 2, hall: 0, startsAt: '2027-09-17T19:00:00.000Z', price: 17500 },
+  { film: 0, hall: 1, startsAt: '2027-09-18T12:00:00.000Z', price: 10000 },
 ];
 
 const BOOKING = {

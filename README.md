@@ -3,6 +3,9 @@
 REST API сервісу бронювання місць у кінотеатрі на NestJS: фільми, зали, сеанси й бронювання.
 Дані зберігаються в PostgreSQL (TypeORM), схема бази створюється лише міграціями.
 
+Користувачі реєструються й входять за поштою та паролем, отримують пару токенів (JWT access-токен і
+refresh-токен з ротацією) і бронюють місця під своїм іменем. Розкладом і довідниками керує лише адміністратор.
+
 ## Вимоги
 
 - Node.js 22 LTS (22.13+) або новіший, npm
@@ -23,7 +26,7 @@ docker compose up -d
 # 4. застосувати міграції — створює всі таблиці в порожній базі
 npm run migration:run
 
-# 5. (необов'язково) заповнити базу даними для перевірки
+# 5. заповнити базу даними для перевірки й створити адміністратора (ADMIN_EMAIL / ADMIN_PASSWORD з .env)
 npm run seed
 
 # 6. запуск у dev-режимі (з перезапуском при змінах)
@@ -32,7 +35,7 @@ npm run start:dev
 
 Сервер: http://localhost:3000, документація Swagger: http://localhost:3000/docs
 
-Зупинити базу: `docker compose down` (дані лишаються в іменованому volume `cinema-pgdata`);
+Зупинити базу: `docker compose down` (дані лишаються в іменованому volume `cinema-hw4-pgdata`);
 `docker compose down -v` — зупинити й видалити дані.
 
 ### Змінні оточення (`.env`)
@@ -48,6 +51,14 @@ POSTGRES_PORT=5432
 POSTGRES_USER=cinema
 POSTGRES_PASSWORD=cinema
 POSTGRES_DB=cinema
+
+JWT_ACCESS_SECRET=change-me-to-a-long-random-string-of-32-plus-chars
+JWT_ACCESS_TTL=15m
+JWT_REFRESH_TTL=7d
+BCRYPT_ROUNDS=10
+
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=admin12345
 ```
 
 | Змінна | Опис | Приклад |
@@ -59,10 +70,18 @@ POSTGRES_DB=cinema
 | `POSTGRES_USER` | Користувач бази; образ Postgres створює його при першому старті | `cinema` |
 | `POSTGRES_PASSWORD` | Пароль користувача | `cinema` |
 | `POSTGRES_DB` | Назва бази | `cinema` |
+| `JWT_ACCESS_SECRET` | Секрет підпису access-токенів (HS256), не коротший за 32 символи | `change-me-…` |
+| `JWT_ACCESS_TTL` | Час життя access-токена в хвилинах: ціле число + `m` | `15m` |
+| `JWT_REFRESH_TTL` | Час життя refresh-токена в днях: ціле число + `d` | `7d` |
+| `BCRYPT_ROUNDS` | Необов'язкова: cost-фактор bcrypt від 4 до 15 (за замовчуванням `10`) | `10` |
+| `ADMIN_EMAIL` | Пошта адміністратора, якого створює `npm run seed` | `admin@example.com` |
+| `ADMIN_PASSWORD` | Пароль цього адміністратора (від 8 символів) | `admin12345` |
 
-Один `.env` читають і застосунок, і `docker-compose.yml`, і CLI TypeORM. Усі змінні обов'язкові: вони проходять
-валідацію (`src/config/environment-variables.ts`, декоратори `class-validator`) — без параметрів підключення
-до бази або з некоректним значенням застосунок не стартує й пише, яка змінна не пройшла перевірку.
+Один `.env` читають і застосунок, і `docker-compose.yml`, і CLI TypeORM, і seed. Усі змінні, крім `BCRYPT_ROUNDS`,
+обов'язкові: вони проходять валідацію (`src/config/environment-variables.ts`, декоратори `class-validator`) — без
+параметрів підключення до бази, без секрету токенів, з часом життя не у форматі `15m` / `7d` або з іншим некоректним
+значенням застосунок не стартує й пише, яка змінна не пройшла перевірку. Для робочого середовища секрет треба
+замінити випадковим рядком, наприклад `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
 Якщо порт `5432` на машині вже зайнятий, достатньо змінити `POSTGRES_PORT` (наприклад, на `5433`) і
 перезапустити `docker compose up -d`.
 
@@ -81,14 +100,40 @@ POSTGRES_DB=cinema
 є окремий файл джерела даних `src/data-source.ts` (`uuidExtension: 'pgcrypto'`, тож `id` отримують
 `DEFAULT gen_random_uuid()`). Міграції оборотні; застосовану міграцію не редагують — зміна схеми означає нову міграцію.
 
-Поточна міграція: `1793728152933-InitialSchema` — таблиці `films`, `halls`, `showings`, `bookings`, `booking_seats`
-з ключами, індексами й зовнішніми ключами.
+| Міграція | Що робить | `down` |
+|---|---|---|
+| `1793728152933-InitialSchema` (з ДЗ 2) | таблиці `films`, `halls`, `showings`, `bookings`, `booking_seats` з ключами, індексами й зовнішніми ключами | видаляє ці таблиці |
+| `1793964918337-CreateUsersAndRefreshTokens` | таблиці `users` і `refresh_tokens` | видаляє обидві таблиці |
+| `1793964918338-AddUserIdToBookings` | видаляє наявні бронювання (у них немає власника; база вважається базою розробки), додає `bookings.user_id` not null з FK на `users` та індекс | видаляє FK, індекс і колонку |
+
+`npm run migration:revert`, виконаний тричі, повертає базу до порожнього стану, після чого `npm run migration:run`
+знову будує всю схему.
 
 ### Засівання (`npm run seed`)
 
-`src/seed.ts` запускається на базі після міграцій і додає 3 фільми, 2 зали, 4 сеанси в різні дати (15–18 січня 2027)
-і 1 бронювання на 2 місця. Кожен запис спершу шукається за природним ключем (назва фільму, назва залу,
-фільм + зал + час сеансу, заброньоване місце), тож повторний запуск не створює дублікатів.
+`src/seed.ts` запускається на базі після міграцій і додає адміністратора (`ADMIN_EMAIL` / `ADMIN_PASSWORD`
+з `.env`, пароль зберігається лише bcrypt-хешем і ніде не друкується), 3 фільми, 2 зали, 4 сеанси в різні дати
+(15–18 вересня 2027) і 1 бронювання адміністратора на 2 місця. Кожен запис спершу шукається за природним ключем
+(пошта, назва фільму, назва залу, фільм + зал + час сеансу, заброньоване місце), тож повторний запуск не створює
+дублікатів.
+
+### Перший адміністратор
+
+Реєстрація через API завжди створює користувача з роллю `user` (поле `role` у тілі відкидається), тому
+адміністратора створюють поза API:
+
+1. **Основний спосіб — seed.** Задайте `ADMIN_EMAIL` і `ADMIN_PASSWORD` у `.env` і виконайте `npm run seed`.
+   Якщо користувача з такою поштою ще немає, його буде створено з роллю `admin`; якщо він уже зареєструвався
+   через `POST /auth/register`, seed лише підвищить його роль до `admin`, пароль не зміниться.
+2. **Альтернатива — SQL.** Зареєструйте користувача через `POST /auth/register` і змініть роль у базі:
+
+   ```bash
+   docker compose exec db psql -U cinema -d cinema \
+     -c "UPDATE users SET role = 'admin' WHERE email = 'olena@example.com';"
+   ```
+
+Роль потрапляє в access-токен під час входу, тож після зміни ролі потрібно увійти знову
+(або оновити пару через `POST /auth/refresh` — роль читається з бази заново).
 
 ### Схема
 
@@ -97,49 +142,90 @@ POSTGRES_DB=cinema
 | `films` | `id` uuid, `title` varchar(255), `duration_minutes` integer, `release_year` integer | PK, усі not null |
 | `halls` | `id` uuid, `name` varchar(100), `rows` integer, `seats_per_row` integer | PK, `name` унікальна, усі not null |
 | `showings` | `id` uuid, `film_id` uuid, `hall_id` uuid, `starts_at` timestamptz, `price` integer (копійки) | FK на `films` і `halls` з `ON DELETE RESTRICT`, усі not null |
-| `bookings` | `id` uuid, `showing_id` uuid, `total_price` integer (копійки), `created_at` timestamptz `DEFAULT now()` | FK на `showings`, усі not null |
+| `bookings` | `id` uuid, `showing_id` uuid, `user_id` uuid, `total_price` integer (копійки), `created_at` timestamptz `DEFAULT now()` | FK на `showings`, FK на `users` з `ON DELETE CASCADE`, індекс по `user_id`, усі not null |
 | `booking_seats` | `id` uuid, `booking_id` uuid, `showing_id` uuid, `row` integer, `seat` integer | FK на `bookings` з `ON DELETE CASCADE`, FK на `showings`; **унікальний індекс (`showing_id`, `row`, `seat`)** |
+| `users` | `id` uuid, `email` varchar(255), `password_hash` varchar(255), `role` varchar(20) `DEFAULT 'user'`, `created_at` timestamptz `DEFAULT now()` | PK, `email` унікальна, `CHECK (role IN ('user', 'admin'))`, усі not null |
+| `refresh_tokens` | `id` uuid, `user_id` uuid, `token_hash` varchar(64), `expires_at` timestamptz, `created_at` timestamptz `DEFAULT now()` | FK на `users` з `ON DELETE CASCADE`, `token_hash` унікальна, індекс по `user_id`, усі not null |
 
 Усі `id` — `uuid DEFAULT gen_random_uuid()`. Місця залу не зберігаються — перелік обчислюється з `rows × seats_per_row`.
 
 Зв'язки (описані декораторами з обох боків): фільм 1 — N сеансів, зал 1 — N сеансів, сеанс 1 — N бронювань,
-бронювання 1 — N заброньованих місць. Сутності лежать у папках `entities` своїх модулів.
+бронювання 1 — N заброньованих місць, користувач 1 — N бронювань, користувач 1 — N refresh-токенів (вхід з кількох
+пристроїв). Сутності лежать у папках `entities` своїх модулів.
 
 ## Перевірка
 
 - `requests.http` — усі маршрути й усі описані помилки. Відкрити у VS Code з розширенням
   [REST Client](https://marketplace.visualstudio.com/items?itemName=humao.rest-client) і виконувати запити
-  згори вниз на запущеному сервері; id підставляються автоматично зі змінних. Назви залів містять
-  `{{$timestamp}}`, тому файл можна проганяти повторно на тій самій базі. Якщо сервер запущено на іншому порту,
-  змініть `@baseUrl` на початку файлу.
+  згори вниз на запущеному сервері **після `npm run seed`** (перші запити входять як адміністратор з
+  `.env.example`). Порядок: реєстрація й вхід → фільм → зал → сеанс → бронювання → мої бронювання →
+  скасування → ротація refresh-токена → вихід → видалення. Токени й id підставляються автоматично зі змінних
+  (`# @name`). Пошта користувачів і назви залів містять `{{$timestamp}}`, тому файл можна проганяти повторно на
+  тій самій базі. Якщо сервер запущено на іншому порту, змініть `@baseUrl` на початку файлу.
 - `npm run test:e2e` — автоматичні e2e-тести (потрібен запущений контейнер з базою). Тести не чіпають робочу базу:
   вони створюють окремі бази `<POSTGRES_DB>_test` і `<POSTGRES_DB>_migrations_test` на тому самому сервері,
-  будують схему міграціями з порожньої бази, перевіряють типи колонок, унікальний індекс і повний відкат міграцій,
-  а наприкінці видаляють ці бази.
+  будують схему міграціями з порожньої бази, перевіряють типи колонок, обмеження й повний відкат міграцій,
+  реєстрацію, вхід, guards, ролі, перевірку власника, ротацію й відкликання токенів, відсутність `passwordHash`
+  у відповідях та опис Swagger, а наприкінці видаляють ці бази.
 
-## Маршрути
+## Автентифікація
 
-| Маршрут | Успіх | Помилки |
-|---|---|---|
-| `POST /films` | 201 | 400 |
-| `GET /films` | 200 | — |
-| `GET /films/:id` | 200 | 404 |
-| `PATCH /films/:id` | 200 | 400, 404 |
-| `DELETE /films/:id` | 204 | 404, 409 (є сеанси) |
-| `POST /halls` | 201 | 400, 409 (назва зайнята) |
-| `GET /halls` | 200 | — |
-| `GET /halls/:id` | 200 + `seats` | 404 |
-| `DELETE /halls/:id` | 204 | 404, 409 (є сеанси) |
-| `POST /showings` | 201 | 400 (фільм/зал не існує, дата не ISO 8601 або в минулому, ціна) |
-| `GET /showings?filmId=&date=YYYY-MM-DD&page=1&limit=20&sort=asc` | 200, `{ items, total, page, limit }` | 400 (`page`, `limit`, `date`, `sort`, `filmId`) |
-| `GET /showings/:id` | 200 | 404 |
-| `GET /showings/:id/seats` | 200 | 404 |
-| `POST /showings/:id/bookings` | 201 | 400, 404, 409 (місце зайняте) |
-| `GET /showings/:id/bookings` | 200 | 404 |
-| `GET /bookings` | 200 | — |
-| `DELETE /bookings/:id` | 204 | 404 |
+1. `POST /auth/register` `{ email, password }` → 201, користувач `{ id, email, role: "user", createdAt }` без пароля
+   та хеша. Пароль від 8 символів, зберігається лише bcrypt-хешем.
+2. `POST /auth/login` `{ email, password }` → 200 `{ accessToken, refreshToken }`.
+3. Захищені маршрути викликаються із заголовком `Authorization: Bearer <accessToken>`.
+4. Коли access-токен прострочився: `POST /auth/refresh` `{ refreshToken }` → 200, нова пара. Переданий
+   refresh-токен після цього недійсний (ротація): його повторне використання дає 401.
+5. `POST /auth/logout` `{ refreshToken }` з access-токеном → 204, refresh-токен відкликано.
 
-Параметр `:id` у шляху має бути UUID, інакше — 400.
+- **Access-токен** — JWT (HS256), підписаний `JWT_ACCESS_SECRET`, живе `JWT_ACCESS_TTL` хвилин. Корисне
+  навантаження: `sub` — id користувача, `role` — роль. Сервер ніде його не зберігає й перевіряє лише підпис і `exp`.
+- **Refresh-токен** — випадковий рядок (`crypto.randomBytes(32)`, base64url), не JWT, живе `JWT_REFRESH_TTL` днів.
+  У таблиці `refresh_tokens` лежить лише його SHA-256 хеш (`node:crypto`): алгоритм детермінований, тож рядок
+  знаходиться за хешем, а витік бази не дає придатних токенів. У користувача може бути кілька refresh-токенів
+  (кілька пристроїв).
+
+## Маршрути та доступ
+
+Три групи доступу:
+
+- **без токена** — реєстрація, вхід, оновлення токенів і всі `GET` фільмів, залів, сеансів та карти місць;
+- **будь-який авторизований користувач** — бронювання, скасування бронювання, мої бронювання, вихід, `GET /auth/me`;
+- **лише адміністратор** — створення/зміна/видалення фільмів і залів, створення сеансів, усі бронювання,
+  бронювання сеансу.
+
+Без токена або з недійсним токеном захищений маршрут дає 401, адміністраторський маршрут з токеном ролі
+`user` — 403.
+
+| Маршрут | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `POST /auth/register` | без токена | 201 | 400 (пошта, пароль < 8), 409 (пошта зайнята) |
+| `POST /auth/login` | без токена | 200 `{ accessToken, refreshToken }` | 401 (однакове повідомлення для пошти й пароля) |
+| `POST /auth/refresh` | без токена | 200, нова пара | 401 (не знайдено, прострочений, уже використаний) |
+| `POST /auth/logout` | авторизований | 204 | 401, 404 (токен не належить користувачу або не існує) |
+| `GET /auth/me` | авторизований | 200 `{ id, email, role }` | 401 |
+| `POST /films` | адміністратор | 201 | 400, 401, 403 |
+| `GET /films` | без токена | 200 | — |
+| `GET /films/:id` | без токена | 200 | 404 |
+| `PATCH /films/:id` | адміністратор | 200 | 400, 401, 403, 404 |
+| `DELETE /films/:id` | адміністратор | 204 | 401, 403, 404, 409 (є сеанси) |
+| `POST /halls` | адміністратор | 201 | 400, 401, 403, 409 (назва зайнята) |
+| `GET /halls` | без токена | 200 | — |
+| `GET /halls/:id` | без токена | 200 + `seats` | 404 |
+| `DELETE /halls/:id` | адміністратор | 204 | 401, 403, 404, 409 (є сеанси) |
+| `POST /showings` | адміністратор | 201 | 400 (фільм/зал не існує, дата не ISO 8601 або в минулому, ціна), 401, 403 |
+| `GET /showings?filmId=&date=YYYY-MM-DD&page=1&limit=20&sort=asc` | без токена | 200, `{ items, total, page, limit }` | 400 (`page`, `limit`, `date`, `sort`, `filmId`) |
+| `GET /showings/:id` | без токена | 200 | 404 |
+| `GET /showings/:id/seats` | без токена | 200 | 404 |
+| `POST /showings/:id/bookings` | авторизований | 201, бронювання на користувача з токена | 400, 401, 404, 409 (місце зайняте) |
+| `GET /showings/:id/bookings` | адміністратор | 200 | 401, 403, 404 |
+| `GET /bookings` | адміністратор | 200 | 401, 403 |
+| `GET /bookings/my` | авторизований | 200, власні бронювання з даними сеансу | 401 |
+| `DELETE /bookings/:id` | авторизований (власник або адміністратор) | 204 | 401, 403 (чуже бронювання), 404 |
+
+Параметр `:id` у шляху має бути UUID, інакше — 400. Swagger (`/docs`) описує схему `Bearer` (кнопка
+**Authorize**), позначає захищені маршрути замком і для кожного з них описує відповідь 401, а для
+адміністраторських маршрутів і `DELETE /bookings/:id` — ще й 403.
 
 ### `GET /showings`
 
@@ -188,6 +274,41 @@ POSTGRES_DB=cinema
 
 ## Рішення
 
+### Автентифікація та ролі
+
+- **Passport не використовується.** `AuthGuard` (`src/auth/guards/auth.guard.ts`) реалізує `CanActivate` і
+  зареєстрований глобально через `APP_GUARD`, тож за замовчуванням кожен маршрут потребує токена; відкриті маршрути
+  позначені власним декоратором `@Public()`. Guard бере токен із заголовка `Authorization: Bearer <token>`,
+  перевіряє підпис і термін дії через `JwtService` і кладе `{ id, role }` у `request.user`. Відсутній заголовок,
+  інша схема, недійсний підпис, прострочений токен або токен з невідомою роллю — 401.
+- **Роль** перевіряє окремий глобальний `RolesGuard` (зареєстрований після `AuthGuard`, тож виконується після нього)
+  за метаданими декоратора `@Roles('admin')` — інакше 403.
+- **Дані користувача в обробнику** — лише через власний параметр-декоратор `@CurrentUser()`
+  (`createParamDecorator`), `@Req()` у контролерах не використовується.
+- **Реєстрація**: `RegisterDto` містить лише `email` і `password`; `ValidationPipe` з `whitelist: true` (без
+  `forbidNonWhitelisted`) мовчки відкидає `role` та інші зайві поля, а `UsersService.create` завжди ставить роль
+  `user`. Пошта зберігається обрізаною й у нижньому регістрі; повторна пошта — 409 (перевірка в сервісі, а
+  унікальний індекс страхує від одночасних запитів).
+- **`passwordHash` не потрапляє у відповіді**: поле сутності `User` позначене `@Exclude()`, а глобальний
+  `ClassSerializerInterceptor` застосовує його до кожної відповіді. Тому сервіси повертають екземпляри сутностей
+  або DTO, а не звичайні об'єкти. Пароль не логується й не повертається ніде.
+- **Вхід**: для невідомої пошти пароль усе одно порівнюється з фіктивним bcrypt-хешем, тож обидва випадки
+  відповідають однаковим 401 `Invalid email or password` за однаковий час.
+- **Ротація refresh-токена — один запит**: `DELETE FROM refresh_tokens WHERE token_hash = $1 AND expires_at > now()
+  RETURNING user_id`. Окремих пошуку й видалення немає, тож із двох одночасних запитів з одним токеном рядок
+  отримає лише один; порожній результат (токен не існує, прострочений або вже використаний) — 401. Після цього
+  видається нова пара, роль для access-токена читається з бази заново.
+- **Вихід**: `DELETE` за хешем токена **і** `user_id` поточного користувача; якщо нічого не видалено (токен чужий
+  або не існує) — 404. Чужий токен при цьому лишається дійсним.
+- **Власник бронювання**: `POST /showings/:id/bookings` бере `userId` лише з токена (поле `userId` у тілі
+  відкидається). Перевірка власника при скасуванні виконується в `BookingsService.remove`, а не в guard, бо
+  потребує запиту до бази: немає бронювання — 404, чуже — 403, адміністратор скасовує будь-яке.
+- **`GET /bookings/my`** — окремий статичний маршрут: серед маршрутів `bookings/:id` є лише `DELETE` (з
+  `ParseUUIDPipe`), тож `my` ніколи не сприймається як id. Кожне бронювання повертається разом із сеансом:
+  фільм, зал, `startsAt`, ціна; лише бронювання користувача з токена.
+
+### Сеанси й бронювання (з ДЗ 2)
+
 - **Бронювання — одна транзакція** (`DataSource.transaction`, усі записи через `manager`): рядок у `bookings`
   і по рядку в `booking_seats` на кожне місце. Якщо хоча б одне місце зайняте, транзакція відкочується, і в базі
   не лишається ні бронювання, ні жодного місця (409).
@@ -221,14 +342,20 @@ POSTGRES_DB=cinema
   підключення до бази — `TypeOrmModule.forRootAsync` з `autoLoadEntities`, сервіси працюють через репозиторії
   (`TypeOrmModule.forFeature`).
 - **Swagger** описує сторінку розкладу окремим класом `ShowingsPageDto`, query-параметри `GET /showings`
-  (`ShowingsQueryDto`) і формат помилки `ErrorResponseDto` для відповідей 400/404/409.
+  (`ShowingsQueryDto`) і формат помилки `ErrorResponseDto` для відповідей 400/401/403/404/409. Схема `Bearer`
+  додана через `addBearerAuth()`, захищені маршрути позначені декоратором `@ApiAuth()` (`@ApiBearerAuth()` +
+  401, і 403 там, де доступ обмежує роль або власник).
 
 ## Структура
 
 ```
 src/
   config/        валідація змінних оточення
-  common/        глобальний фільтр винятків, формат помилки, коди помилок PostgreSQL
+  common/        глобальний фільтр винятків, формат помилки, коди помилок PostgreSQL,
+                 декоратори @Public(), @Roles(), @CurrentUser(), @ApiAuth()
+  users/         UsersModule    — користувачі та ролі (entities/user.entity.ts)
+  auth/          AuthModule     — реєстрація, вхід, токени, AuthGuard і RolesGuard
+                 (entities/refresh-token.entity.ts)
   films/         FilmsModule    — фільми (entities/film.entity.ts)
   halls/         HallsModule    — зали та обчислення місць (entities/hall.entity.ts)
   showings/      ShowingsModule — сеанси, розклад, карта місць і бронювання
@@ -236,7 +363,7 @@ src/
   migrations/    міграції TypeORM
   data-source.ts джерело даних для CLI TypeORM і seed
   seed.ts        засівання бази
-  setup-app.ts   глобальні ValidationPipe, фільтр винятків і Swagger
+  setup-app.ts   глобальні ValidationPipe, ClassSerializerInterceptor, фільтр винятків і Swagger
 docker-compose.yml  PostgreSQL 18
 ```
 

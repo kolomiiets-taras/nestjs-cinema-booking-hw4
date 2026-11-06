@@ -1,19 +1,170 @@
-### Cinema Booking API — перевірка всіх маршрутів і помилок.
-### Виконувати запити згори вниз (VS Code, розширення REST Client) на запущеному сервері
-### після `docker compose up -d` і `npm run migration:run`.
-### Ідентифікатори підставляються зі змінних — нічого копіювати вручну не потрібно.
-### Назви залів містять {{$timestamp}}, тож файл можна проганяти повторно на тій самій базі.
+### Cinema Booking API (ДЗ 4) — перевірка всіх маршрутів і помилок.
+### Виконувати запити згори вниз (VS Code, розширення REST Client) на запущеному сервері.
+### Перед цим: `docker compose up -d`, `npm run migration:run` і `npm run seed` —
+### seed створює адміністратора з ADMIN_EMAIL / ADMIN_PASSWORD (значення нижче збігаються з .env.example).
+### Токени й ідентифікатори підставляються зі змінних (# @name) — нічого копіювати вручну не потрібно.
+### Пошта користувачів і назви залів містять {{$timestamp}}, тож файл можна проганяти повторно на тій самій базі.
 ### Кожна помилка повертається в єдиному форматі: { statusCode, message, path, timestamp }.
 
 @baseUrl = http://localhost:3000
 @missingId = 00000000-0000-4000-8000-000000000000
 @day = 2030-05-10
+@adminEmail = admin@example.com
+@adminPassword = admin12345
+@userPassword = password123
+# Підписаний секретом з .env.example, але термін дії сплив (exp = 2026-01-01T00:15:00Z)
+@expiredToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDAiLCJyb2xlIjoidXNlciIsImlhdCI6MTc2NzIyNTYwMCwiZXhwIjoxNzY3MjI2NTAwfQ.36YV5VQyunyTJ7P9z55qvSt-2F8U_pgGOCm-kBxaGw0
+
+########## РЕЄСТРАЦІЯ ТА ВХІД ##########
+
+### Зареєструвати користувача Олену -> 201, роль user, без пароля та passwordHash
+# @name olena
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "olena.{{$timestamp}}@example.com",
+  "password": "{{userPassword}}"
+}
+
+### Зареєструвати Тараса з "role": "admin" у тілі -> 201, роль усе одно user (поле відкидається)
+# @name taras
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "taras.{{$timestamp}}@example.com",
+  "password": "{{userPassword}}",
+  "role": "admin"
+}
+
+### Пошта вже зареєстрована -> 409
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "{{olena.response.body.$.email}}",
+  "password": "another-password"
+}
+
+### Некоректний формат пошти -> 400
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "not-an-email",
+  "password": "{{userPassword}}"
+}
+
+### Пароль коротший за 8 символів -> 400
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "short.{{$timestamp}}@example.com",
+  "password": "1234567"
+}
+
+### Вхід адміністратора (створений `npm run seed`) -> 200, { accessToken, refreshToken }
+# @name admin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{adminEmail}}",
+  "password": "{{adminPassword}}"
+}
+
+### Вхід Олени -> 200, { accessToken, refreshToken }
+# @name olenaLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{olena.response.body.$.email}}",
+  "password": "{{userPassword}}"
+}
+
+### Вхід Тараса -> 200
+# @name tarasLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{taras.response.body.$.email}}",
+  "password": "{{userPassword}}"
+}
+
+### Неправильна пошта -> 401 "Invalid email or password"
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "nobody.{{$timestamp}}@example.com",
+  "password": "{{userPassword}}"
+}
+
+### Неправильний пароль -> 401 з тим самим повідомленням "Invalid email or password"
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{olena.response.body.$.email}}",
+  "password": "wrong-password"
+}
+
+########## ПОТОЧНИЙ КОРИСТУВАЧ І ФОРМАТ ЗАГОЛОВКА ##########
+
+### Дані поточного користувача -> 200, { id, email, role: "user" }
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+
+### Адміністратор -> 200, role: "admin"
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{admin.response.body.$.accessToken}}
+
+### Без заголовка Authorization -> 401
+GET {{baseUrl}}/auth/me
+
+### Зіпсований формат заголовка (не схема Bearer) -> 401
+GET {{baseUrl}}/auth/me
+Authorization: Token {{olenaLogin.response.body.$.accessToken}}
+
+### Недійсний підпис (до токена дописано символи) -> 401
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}broken
+
+### Прострочений токен -> 401
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{expiredToken}}
 
 ########## ФІЛЬМИ ##########
 
-### Створити фільм -> 201
+### Створити фільм без токена -> 401
+POST {{baseUrl}}/films
+Content-Type: application/json
+
+{
+  "title": "No token",
+  "durationMinutes": 90,
+  "releaseYear": 2020
+}
+
+### Створити фільм з токеном ролі user -> 403
+POST {{baseUrl}}/films
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "title": "Not an admin",
+  "durationMinutes": 90,
+  "releaseYear": 2020
+}
+
+### Створити фільм (адміністратор) -> 201
 # @name film
 POST {{baseUrl}}/films
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -25,6 +176,7 @@ Content-Type: application/json
 ### Створити другий фільм -> 201
 # @name film2
 POST {{baseUrl}}/films
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -35,6 +187,7 @@ Content-Type: application/json
 
 ### Фільм без обов'язкового поля -> 400
 POST {{baseUrl}}/films
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -44,6 +197,7 @@ Content-Type: application/json
 
 ### Поле не того типу -> 400
 POST {{baseUrl}}/films
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -52,10 +206,10 @@ Content-Type: application/json
   "releaseYear": 2020
 }
 
-### Список фільмів -> 200
+### Список фільмів без токена -> 200
 GET {{baseUrl}}/films
 
-### Фільм за id -> 200
+### Фільм за id без токена -> 200
 GET {{baseUrl}}/films/{{film.response.body.$.id}}
 
 ### Неіснуючий фільм -> 404
@@ -64,8 +218,26 @@ GET {{baseUrl}}/films/{{missingId}}
 ### id не є UUID -> 400
 GET {{baseUrl}}/films/not-a-uuid
 
-### Оновити частину полів -> 200
+### Оновити фільм без токена -> 401
 PATCH {{baseUrl}}/films/{{film.response.body.$.id}}
+Content-Type: application/json
+
+{
+  "durationMinutes": 1
+}
+
+### Оновити фільм з токеном ролі user -> 403
+PATCH {{baseUrl}}/films/{{film.response.body.$.id}}
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "durationMinutes": 1
+}
+
+### Оновити частину полів (адміністратор) -> 200
+PATCH {{baseUrl}}/films/{{film.response.body.$.id}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -74,6 +246,7 @@ Content-Type: application/json
 
 ### Оновлення з полем не того типу -> 400
 PATCH {{baseUrl}}/films/{{film.response.body.$.id}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -82,6 +255,7 @@ Content-Type: application/json
 
 ### Оновлення неіснуючого фільму -> 404
 PATCH {{baseUrl}}/films/{{missingId}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -90,9 +264,31 @@ Content-Type: application/json
 
 ########## ЗАЛИ ##########
 
-### Створити зал 3×5 -> 201
+### Створити зал без токена -> 401
+POST {{baseUrl}}/halls
+Content-Type: application/json
+
+{
+  "name": "No token",
+  "rows": 1,
+  "seatsPerRow": 1
+}
+
+### Створити зал з токеном ролі user -> 403
+POST {{baseUrl}}/halls
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "Not an admin",
+  "rows": 1,
+  "seatsPerRow": 1
+}
+
+### Створити зал 3×5 (адміністратор) -> 201
 # @name hall
 POST {{baseUrl}}/halls
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -103,6 +299,7 @@ Content-Type: application/json
 
 ### Зал з такою самою назвою -> 409
 POST {{baseUrl}}/halls
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -113,6 +310,7 @@ Content-Type: application/json
 
 ### Зал без назви -> 400
 POST {{baseUrl}}/halls
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -122,6 +320,7 @@ Content-Type: application/json
 
 ### Кількість рядів не ціле додатне -> 400
 POST {{baseUrl}}/halls
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -130,10 +329,10 @@ Content-Type: application/json
   "seatsPerRow": 2.5
 }
 
-### Список залів -> 200
+### Список залів без токена -> 200
 GET {{baseUrl}}/halls
 
-### Зал з переліком 15 місць -> 200
+### Зал з переліком 15 місць без токена -> 200
 GET {{baseUrl}}/halls/{{hall.response.body.$.id}}
 
 ### Неіснуючий зал -> 404
@@ -141,9 +340,33 @@ GET {{baseUrl}}/halls/{{missingId}}
 
 ########## СЕАНСИ ##########
 
-### Сеанс 1: Dune, 18:00 -> 201
+### Створити сеанс без токена -> 401
+POST {{baseUrl}}/showings
+Content-Type: application/json
+
+{
+  "filmId": "{{film.response.body.$.id}}",
+  "hallId": "{{hall.response.body.$.id}}",
+  "startsAt": "{{day}}T18:00:00Z",
+  "price": 12500
+}
+
+### Створити сеанс з токеном ролі user -> 403
+POST {{baseUrl}}/showings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "filmId": "{{film.response.body.$.id}}",
+  "hallId": "{{hall.response.body.$.id}}",
+  "startsAt": "{{day}}T18:00:00Z",
+  "price": 12500
+}
+
+### Сеанс 1: Dune, 18:00 (адміністратор) -> 201
 # @name showing
 POST {{baseUrl}}/showings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -156,6 +379,7 @@ Content-Type: application/json
 ### Сеанс 2: Arrival, 12:00 того ж дня -> 201
 # @name showing2
 POST {{baseUrl}}/showings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -167,6 +391,7 @@ Content-Type: application/json
 
 ### Сеанс 3: Dune, наступного дня -> 201
 POST {{baseUrl}}/showings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -178,6 +403,7 @@ Content-Type: application/json
 
 ### Неіснуючий фільм -> 400 (не 404)
 POST {{baseUrl}}/showings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -189,6 +415,7 @@ Content-Type: application/json
 
 ### Неіснуючий зал -> 400 (не 404)
 POST {{baseUrl}}/showings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -200,6 +427,7 @@ Content-Type: application/json
 
 ### startsAt не у форматі ISO 8601 -> 400
 POST {{baseUrl}}/showings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -211,6 +439,7 @@ Content-Type: application/json
 
 ### startsAt у минулому -> 400
 POST {{baseUrl}}/showings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -222,6 +451,7 @@ Content-Type: application/json
 
 ### price не ціле додатне -> 400
 POST {{baseUrl}}/showings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -231,7 +461,7 @@ Content-Type: application/json
   "price": -100
 }
 
-### Розклад: перша сторінка за зростанням startsAt -> 200, { items, total, page: 1, limit: 20 }
+### Розклад без токена: перша сторінка за зростанням startsAt -> 200, { items, total, page: 1, limit: 20 }
 GET {{baseUrl}}/showings
 
 ### Розклад фільму -> 200 (сеанси лише цього фільму)
@@ -279,13 +509,13 @@ GET {{baseUrl}}/showings?limit=2.5
 ### sort не asc/desc -> 400
 GET {{baseUrl}}/showings?sort=newest
 
-### Сеанс за id з назвами фільму й залу -> 200
+### Сеанс за id з назвами фільму й залу без токена -> 200
 GET {{baseUrl}}/showings/{{showing.response.body.$.id}}
 
 ### Неіснуючий сеанс -> 404
 GET {{baseUrl}}/showings/{{missingId}}
 
-### Карта місць сеансу (усі вільні) -> 200
+### Карта місць сеансу без токена (усі вільні) -> 200
 GET {{baseUrl}}/showings/{{showing.response.body.$.id}}/seats
 
 ### Карта місць неіснуючого сеансу -> 404
@@ -293,20 +523,41 @@ GET {{baseUrl}}/showings/{{missingId}}/seats
 
 ########## БРОНЮВАННЯ ##########
 
-### Забронювати 2 місця -> 201, totalPrice = 25000
-# @name booking
+### Забронювати без токена -> 401
 POST {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
 Content-Type: application/json
 
 {
+  "seats": [{ "row": 1, "seat": 1 }]
+}
+
+### Олена бронює 2 місця -> 201, totalPrice = 25000, userId = id Олени (userId з тіла не приймається)
+# @name booking
+POST {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "userId": "{{taras.response.body.$.id}}",
   "seats": [
     { "row": 2, "seat": 3 },
     { "row": 2, "seat": 4 }
   ]
 }
 
+### Тарас бронює місце на другому сеансі -> 201
+# @name tarasBooking
+POST {{baseUrl}}/showings/{{showing2.response.body.$.id}}/bookings
+Authorization: Bearer {{tarasLogin.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "seats": [{ "row": 1, "seat": 5 }]
+}
+
 ### Бронювання на неіснуючий сеанс -> 404
 POST {{baseUrl}}/showings/{{missingId}}/bookings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -315,6 +566,7 @@ Content-Type: application/json
 
 ### Порожній масив місць -> 400
 POST {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -323,6 +575,7 @@ Content-Type: application/json
 
 ### Елемент без обох чисел -> 400
 POST {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -331,6 +584,7 @@ Content-Type: application/json
 
 ### Місце повторюється в масиві -> 400
 POST {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -342,6 +596,7 @@ Content-Type: application/json
 
 ### Місця немає в залі (ряд 9 у залі з 3 рядів) -> 400
 POST {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -350,6 +605,7 @@ Content-Type: application/json
 
 ### Номер місця не ціле додатне -> 400
 POST {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -358,6 +614,7 @@ Content-Type: application/json
 
 ### Одне з місць уже зайняте -> 409, місце 1-1 НЕ бронюється (транзакція відкочується)
 POST {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{tarasLogin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -370,49 +627,205 @@ Content-Type: application/json
 ### Карта місць: зайняті лише 2-3 і 2-4 -> 200
 GET {{baseUrl}}/showings/{{showing.response.body.$.id}}/seats
 
-### Усі бронювання -> 200
+### Мої бронювання (Олена) -> 200, лише її бронювання з даними сеансу (фільм, зал, startsAt)
+GET {{baseUrl}}/bookings/my
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+
+### Мої бронювання без токена -> 401
+GET {{baseUrl}}/bookings/my
+
+### Усі бронювання без токена -> 401
 GET {{baseUrl}}/bookings
 
-### Бронювання сеансу -> 200
+### Усі бронювання з токеном ролі user -> 403
+GET {{baseUrl}}/bookings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+
+### Усі бронювання (адміністратор) -> 200
+GET {{baseUrl}}/bookings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
+
+### Бронювання сеансу без токена -> 401
 GET {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+
+### Бронювання сеансу з токеном ролі user -> 403
+GET {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+
+### Бронювання сеансу (адміністратор) -> 200
+GET {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 
 ### Бронювання неіснуючого сеансу -> 404
 GET {{baseUrl}}/showings/{{missingId}}/bookings
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 
-########## ВИДАЛЕННЯ ##########
+########## СКАСУВАННЯ БРОНЮВАНЬ ##########
 
-### Видалити фільм, для якого є сеанси -> 409 з поясненням (каскаду немає)
-DELETE {{baseUrl}}/films/{{film.response.body.$.id}}
-
-### Видалити зал, у якому є сеанси -> 409 з поясненням (каскаду немає)
-DELETE {{baseUrl}}/halls/{{hall.response.body.$.id}}
-
-### Скасувати бронювання -> 204, рядки booking_seats видаляються каскадно
+### Скасувати без токена -> 401
 DELETE {{baseUrl}}/bookings/{{booking.response.body.$.id}}
+
+### Олена скасовує бронювання Тараса -> 403
+DELETE {{baseUrl}}/bookings/{{tarasBooking.response.body.$.id}}
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+
+### Скасувати неіснуюче бронювання -> 404
+DELETE {{baseUrl}}/bookings/{{missingId}}
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+
+### Олена скасовує власне бронювання -> 204, рядки booking_seats видаляються каскадно
+DELETE {{baseUrl}}/bookings/{{booking.response.body.$.id}}
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
 
 ### Повторне скасування -> 404
 DELETE {{baseUrl}}/bookings/{{booking.response.body.$.id}}
+Authorization: Bearer {{olenaLogin.response.body.$.accessToken}}
+
+### Адміністратор скасовує чуже бронювання (Тараса) -> 204
+DELETE {{baseUrl}}/bookings/{{tarasBooking.response.body.$.id}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 
 ### Карта місць: усі вільні -> 200
 GET {{baseUrl}}/showings/{{showing.response.body.$.id}}/seats
 
 ### Звільнені місця можна забронювати знову -> 201
 POST {{baseUrl}}/showings/{{showing.response.body.$.id}}/bookings
+Authorization: Bearer {{tarasLogin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
   "seats": [{ "row": 2, "seat": 3 }]
 }
 
+########## ОНОВЛЕННЯ ТОКЕНІВ (РОТАЦІЯ) ##########
+
+### Нова пара токенів за refresh-токеном Олени -> 200 (access-токен не потрібен)
+# @name olenaRefresh
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{olenaLogin.response.body.$.refreshToken}}"
+}
+
+### Новий access-токен працює -> 200
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{olenaRefresh.response.body.$.accessToken}}
+
+### Повторне використання старого refresh-токена -> 401 (його видалено під час ротації)
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{olenaLogin.response.body.$.refreshToken}}"
+}
+
+### Неіснуючий refresh-токен -> 401
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "this-token-was-never-issued"
+}
+
+########## ВИХІД ##########
+
+### Вихід без access-токена -> 401
+POST {{baseUrl}}/auth/logout
+Content-Type: application/json
+
+{
+  "refreshToken": "{{olenaRefresh.response.body.$.refreshToken}}"
+}
+
+### Вихід з недійсним access-токеном -> 401
+POST {{baseUrl}}/auth/logout
+Authorization: Bearer not-a-jwt
+Content-Type: application/json
+
+{
+  "refreshToken": "{{olenaRefresh.response.body.$.refreshToken}}"
+}
+
+### Олена відкликає refresh-токен Тараса -> 404 (токен не належить поточному користувачу)
+POST {{baseUrl}}/auth/logout
+Authorization: Bearer {{olenaRefresh.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "refreshToken": "{{tarasLogin.response.body.$.refreshToken}}"
+}
+
+### Неіснуючий refresh-токен -> 404
+POST {{baseUrl}}/auth/logout
+Authorization: Bearer {{olenaRefresh.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "refreshToken": "this-token-was-never-issued"
+}
+
+### Олена виходить: власний refresh-токен -> 204, тіло порожнє
+POST {{baseUrl}}/auth/logout
+Authorization: Bearer {{olenaRefresh.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "refreshToken": "{{olenaRefresh.response.body.$.refreshToken}}"
+}
+
+### Відкликаний refresh-токен більше не оновлює пару -> 401
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{olenaRefresh.response.body.$.refreshToken}}"
+}
+
+### Refresh-токен Тараса після спроби Олени досі дійсний -> 200
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{tarasLogin.response.body.$.refreshToken}}"
+}
+
+########## ВИДАЛЕННЯ ФІЛЬМІВ І ЗАЛІВ ##########
+
+### Видалити фільм без токена -> 401
+DELETE {{baseUrl}}/films/{{film.response.body.$.id}}
+
+### Видалити фільм з токеном ролі user -> 403
+DELETE {{baseUrl}}/films/{{film.response.body.$.id}}
+Authorization: Bearer {{tarasLogin.response.body.$.accessToken}}
+
+### Видалити фільм, для якого є сеанси -> 409 з поясненням (каскаду немає)
+DELETE {{baseUrl}}/films/{{film.response.body.$.id}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
+
+### Видалити зал без токена -> 401
+DELETE {{baseUrl}}/halls/{{hall.response.body.$.id}}
+
+### Видалити зал з токеном ролі user -> 403
+DELETE {{baseUrl}}/halls/{{hall.response.body.$.id}}
+Authorization: Bearer {{tarasLogin.response.body.$.accessToken}}
+
+### Видалити зал, у якому є сеанси -> 409 з поясненням (каскаду немає)
+DELETE {{baseUrl}}/halls/{{hall.response.body.$.id}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
+
 ### Видалити неіснуючий фільм -> 404
 DELETE {{baseUrl}}/films/{{missingId}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 
 ### Видалити неіснуючий зал -> 404
 DELETE {{baseUrl}}/halls/{{missingId}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 
 ### Тимчасовий фільм без сеансів -> 201
 # @name tempFilm
 POST {{baseUrl}}/films
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -423,10 +836,12 @@ Content-Type: application/json
 
 ### Фільм без сеансів можна видалити -> 204
 DELETE {{baseUrl}}/films/{{tempFilm.response.body.$.id}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 
 ### Тимчасовий зал без сеансів -> 201
 # @name tempHall
 POST {{baseUrl}}/halls
+Authorization: Bearer {{admin.response.body.$.accessToken}}
 Content-Type: application/json
 
 {
@@ -437,3 +852,4 @@ Content-Type: application/json
 
 ### Зал без сеансів можна видалити -> 204
 DELETE {{baseUrl}}/halls/{{tempHall.response.body.$.id}}
+Authorization: Bearer {{admin.response.body.$.accessToken}}
