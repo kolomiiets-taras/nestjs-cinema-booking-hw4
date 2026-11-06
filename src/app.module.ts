@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuthModule } from './auth/auth.module';
 import { EnvironmentVariables, validate } from './config/environment-variables';
 import { FilmsModule } from './films/films.module';
 import { HallsModule } from './halls/halls.module';
 import { ShowingsModule } from './showings/showings.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -24,6 +26,8 @@ import { ShowingsModule } from './showings/showings.module';
         synchronize: false,
       }),
     }),
+    UsersModule,
+    AuthModule,
     FilmsModule,
     HallsModule,
     ShowingsModule,

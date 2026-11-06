@@ -8,6 +8,7 @@ import {
   OneToMany,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { User } from '../../users/entities/user.entity';
 import { BookingSeat } from './booking-seat.entity';
 import { Showing } from './showing.entity';
 
@@ -27,6 +28,18 @@ export class Booking {
   })
   @JoinColumn({ name: 'showing_id' })
   showing?: Showing;
+
+  /** Owner of the booking: always the user from the access token. */
+  @Index('IDX_bookings_user_id')
+  @Column({ name: 'user_id', type: 'uuid' })
+  userId: string;
+
+  @ManyToOne(() => User, (user) => user.bookings, {
+    nullable: false,
+    onDelete: 'CASCADE',
+  })
+  @JoinColumn({ name: 'user_id' })
+  user?: User;
 
   /** Showing price × number of seats, in kopecks. */
   @Column({ name: 'total_price', type: 'integer' })

@@ -130,7 +130,8 @@ export class ShowingsService {
     return this.showingsRepository.existsBy({ hallId });
   }
 
-  private toResponse(showing: Showing): ShowingResponseDto {
+  /** Showing loaded with film and hall -> response; also used for GET /bookings/my. */
+  toResponse(showing: Showing): ShowingResponseDto {
     if (!showing.film || !showing.hall) {
       throw new Error(`Showing "${showing.id}" was loaded without film/hall`);
     }

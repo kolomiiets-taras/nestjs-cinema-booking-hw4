@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -12,10 +13,13 @@ import {
   PG_UNIQUE_VIOLATION,
   isDatabaseError,
 } from '../common/database-errors';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { Seat } from '../halls/dto/hall-with-seats.dto';
 import { HallsService } from '../halls/halls.service';
+import { UserRole } from '../users/user-role.enum';
 import { BookingResponseDto } from './dto/booking-response.dto';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { MyBookingDto } from './dto/my-booking.dto';
 import { SeatStateDto } from './dto/seat-state.dto';
 import { BookingSeat } from './entities/booking-seat.entity';
 import { Booking } from './entities/booking.entity';
@@ -37,9 +41,11 @@ export class BookingsService {
     private readonly hallsService: HallsService,
   ) {}
 
+  /** The owner is always the user from the access token, never from the body. */
   async create(
     showingId: string,
     dto: CreateBookingDto,
+    userId: string,
   ): Promise<BookingResponseDto> {
     const showing = await this.showingsService.findOne(showingId);
     const hall = await this.hallsService.findOne(showing.hallId);
@@ -73,6 +79,7 @@ export class BookingsService {
         const created = await manager.save(
           manager.create(Booking, {
             showingId,
+            userId,
             totalPrice: showing.price * dto.seats.length,
           }),
         );
@@ -124,6 +131,28 @@ export class BookingsService {
     return bookings.map((booking) => this.toResponse(booking));
   }
 
+  /** Bookings of one user with their showings (film title, hall name, start time). */
+  async findMine(userId: string): Promise<MyBookingDto[]> {
+    const bookings = await this.bookingsRepository.find({
+      where: { userId },
+      relations: { seats: true, showing: { film: true, hall: true } },
+      order: {
+        createdAt: 'ASC',
+        id: 'ASC',
+        seats: { row: 'ASC', seat: 'ASC' },
+      },
+    });
+    return bookings.map((booking) => {
+      if (!booking.showing) {
+        throw new Error(`Booking "${booking.id}" was loaded without showing`);
+      }
+      return {
+        ...this.toResponse(booking),
+        showing: this.showingsService.toResponse(booking.showing),
+      };
+    });
+  }
+
   async getSeatMap(showingId: string): Promise<SeatStateDto[]> {
     const showing = await this.showingsService.findOne(showingId);
     const hall = await this.hallsService.findOne(showing.hallId);
@@ -137,18 +166,38 @@ export class BookingsService {
       .map((seat) => ({ ...seat, isBooked: booked.has(seatKey(seat)) }));
   }
 
-  /** Seats of the booking are removed by ON DELETE CASCADE on booking_seats.booking_id. */
-  async remove(id: string): Promise<void> {
+  /**
+   * A user cancels only their own booking, an administrator — any booking.
+   * The owner check needs the booking itself, so it is done here, not in a guard.
+   * Seats of the booking are removed by ON DELETE CASCADE on booking_seats.booking_id.
+   */
+  async remove(id: string, user: AuthUser): Promise<void> {
+    const booking = await this.bookingsRepository.findOne({
+      select: { id: true, userId: true },
+      where: { id },
+    });
+    if (!booking) {
+      throw this.bookingNotFound(id);
+    }
+    if (user.role !== UserRole.Admin && booking.userId !== user.id) {
+      throw new ForbiddenException(`Booking "${id}" belongs to another user`);
+    }
     const result = await this.bookingsRepository.delete({ id });
     if (!result.affected) {
-      throw new NotFoundException(`Booking with id "${id}" not found`);
+      // Cancelled by a parallel request between the check and the delete.
+      throw this.bookingNotFound(id);
     }
+  }
+
+  private bookingNotFound(id: string): NotFoundException {
+    return new NotFoundException(`Booking with id "${id}" not found`);
   }
 
   private toResponse(booking: Booking): BookingResponseDto {
     return {
       id: booking.id,
       showingId: booking.showingId,
+      userId: booking.userId,
       seats: (booking.seats ?? []).map(({ row, seat }) => ({ row, seat })),
       totalPrice: booking.totalPrice,
       createdAt: booking.createdAt.toISOString(),

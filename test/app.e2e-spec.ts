@@ -1,10 +1,8 @@
 import { INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
 import request, { Response } from 'supertest';
 import { App } from 'supertest/types';
 import { DataSource } from 'typeorm';
-import { AppModule } from '../src/app.module';
-import { setupApp } from '../src/setup-app';
+import { bearer, createTestApp, createUser } from './test-app';
 
 const FUTURE = '2030-05-10';
 const MISSING_ID = '00000000-0000-4000-8000-000000000000';
@@ -31,6 +29,7 @@ interface SeatBody {
 }
 interface BookingBody extends Entity {
   showingId: string;
+  userId: string;
   seats: { row: number; seat: number }[];
   totalPrice: number;
   createdAt: string;
@@ -50,6 +49,9 @@ describe('Cinema booking API (e2e)', () => {
   let app: INestApplication<App>;
   let dataSource: DataSource;
   let http: () => ReturnType<typeof request>;
+  /** Requests with the access token of an administrator. */
+  let admin: () => ReturnType<typeof request.agent>;
+  let adminId: string;
 
   let filmId: string;
   let otherFilmId: string;
@@ -67,17 +69,19 @@ describe('Cinema booking API (e2e)', () => {
   };
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    app = moduleRef.createNestApplication();
-    setupApp(app);
-    await app.init();
-    dataSource = app.get(DataSource);
-    await dataSource.query(
-      'TRUNCATE booking_seats, bookings, showings, halls, films',
-    );
+    ({ app, dataSource } = await createTestApp());
     http = () => request(app.getHttpServer());
+    const adminUser = await createUser(
+      app,
+      dataSource,
+      'admin@example.com',
+      'admin',
+    );
+    adminId = adminUser.id;
+    admin = () =>
+      request
+        .agent(app.getHttpServer())
+        .set('Authorization', bearer(adminUser.accessToken));
   });
 
   afterAll(async () => {
@@ -86,7 +90,7 @@ describe('Cinema booking API (e2e)', () => {
 
   describe('films', () => {
     it('POST /films creates a film', async () => {
-      const res = await http()
+      const res = await admin()
         .post('/films')
         .send({ title: 'Dune', durationMinutes: 166, releaseYear: 2024 })
         .expect(201);
@@ -98,7 +102,7 @@ describe('Cinema booking API (e2e)', () => {
       });
       filmId = body<Entity>(res).id;
 
-      const other = await http()
+      const other = await admin()
         .post('/films')
         .send({ title: 'Arrival', durationMinutes: 116, releaseYear: 2016 })
         .expect(201);
@@ -106,18 +110,18 @@ describe('Cinema booking API (e2e)', () => {
     });
 
     it('POST /films -> 400 on missing field / wrong type', async () => {
-      await http()
+      await admin()
         .post('/films')
         .send({ title: 'X', durationMinutes: 90 })
         .expect(400);
-      await http()
+      await admin()
         .post('/films')
         .send({ title: 'X', durationMinutes: '90', releaseYear: 2020 })
         .expect(400);
     });
 
     it('POST /films strips unknown fields', async () => {
-      const res = await http()
+      const res = await admin()
         .post('/films')
         .send({
           title: 'Temp',
@@ -127,7 +131,7 @@ describe('Cinema booking API (e2e)', () => {
         })
         .expect(201);
       expect(res.body).not.toHaveProperty('hacked');
-      await http()
+      await admin()
         .delete(`/films/${body<Entity>(res).id}`)
         .expect(204);
     });
@@ -140,7 +144,7 @@ describe('Cinema booking API (e2e)', () => {
     });
 
     it('PATCH /films/:id updates subset, 400 on type, 404', async () => {
-      const res = await http()
+      const res = await admin()
         .patch(`/films/${filmId}`)
         .send({ title: 'Dune: Part Two' })
         .expect(200);
@@ -148,11 +152,11 @@ describe('Cinema booking API (e2e)', () => {
         title: 'Dune: Part Two',
         durationMinutes: 166,
       });
-      await http()
+      await admin()
         .patch(`/films/${filmId}`)
         .send({ releaseYear: 'soon' })
         .expect(400);
-      await http()
+      await admin()
         .patch(`/films/${MISSING_ID}`)
         .send({ title: 'X' })
         .expect(404);
@@ -171,7 +175,7 @@ describe('Cinema booking API (e2e)', () => {
         timestamp: expect.any(String) as string,
       });
 
-      const invalid = await http().post('/films').send({}).expect(400);
+      const invalid = await admin().post('/films').send({}).expect(400);
       expect(body<ErrorBody>(invalid)).toMatchObject({
         statusCode: 400,
         path: '/films',
@@ -188,25 +192,28 @@ describe('Cinema booking API (e2e)', () => {
 
   describe('halls', () => {
     it('POST /halls creates a hall, 409 on duplicate name, 400 on non-positive', async () => {
-      const res = await http()
+      const res = await admin()
         .post('/halls')
         .send({ name: 'Red', rows: 3, seatsPerRow: 5 })
         .expect(201);
       hallId = body<Entity>(res).id;
-      await http()
+      await admin()
         .post('/halls')
         .send({ name: ' red ', rows: 2, seatsPerRow: 2 })
         .expect(409);
-      await http()
+      await admin()
         .post('/halls')
         .send({ name: 'Blue', rows: 0, seatsPerRow: 2 })
         .expect(400);
-      await http()
+      await admin()
         .post('/halls')
         .send({ name: 'Blue', rows: 2.5, seatsPerRow: 2 })
         .expect(400);
-      await http().post('/halls').send({ rows: 2, seatsPerRow: 2 }).expect(400);
-      await http()
+      await admin()
+        .post('/halls')
+        .send({ rows: 2, seatsPerRow: 2 })
+        .expect(400);
+      await admin()
         .post('/halls')
         .send({ name: '   ', rows: 2, seatsPerRow: 2 })
         .expect(400);
@@ -225,7 +232,7 @@ describe('Cinema booking API (e2e)', () => {
 
   describe('showings', () => {
     it('POST /showings creates showings with film title and hall name', async () => {
-      const a = await http()
+      const a = await admin()
         .post('/showings')
         .send({ filmId, hallId, startsAt: `${FUTURE}T18:00:00Z`, price: 12500 })
         .expect(201);
@@ -238,7 +245,7 @@ describe('Cinema booking API (e2e)', () => {
       });
       showingA = body<Entity>(a).id;
 
-      const b = await http()
+      const b = await admin()
         .post('/showings')
         .send({
           filmId: otherFilmId,
@@ -249,7 +256,7 @@ describe('Cinema booking API (e2e)', () => {
         .expect(201);
       showingB = body<Entity>(b).id;
 
-      const c = await http()
+      const c = await admin()
         .post('/showings')
         .send({ filmId, hallId, startsAt: '2030-05-11T10:00:00Z', price: 9000 })
         .expect(201);
@@ -263,29 +270,29 @@ describe('Cinema booking API (e2e)', () => {
         startsAt: `${FUTURE}T18:00:00Z`,
         price: 100,
       };
-      const missingFilm = await http()
+      const missingFilm = await admin()
         .post('/showings')
         .send({ ...base, filmId: MISSING_ID })
         .expect(400);
       expect(body<ErrorBody>(missingFilm).message).toContain('Film');
-      const missingHall = await http()
+      const missingHall = await admin()
         .post('/showings')
         .send({ ...base, hallId: MISSING_ID })
         .expect(400);
       expect(body<ErrorBody>(missingHall).message).toContain('Hall');
-      await http()
+      await admin()
         .post('/showings')
         .send({ ...base, startsAt: '2020-01-01T10:00:00Z' })
         .expect(400);
-      await http()
+      await admin()
         .post('/showings')
         .send({ ...base, startsAt: 'tomorrow' })
         .expect(400);
-      await http()
+      await admin()
         .post('/showings')
         .send({ ...base, price: 0 })
         .expect(400);
-      await http()
+      await admin()
         .post('/showings')
         .send({ ...base, price: 99.5 })
         .expect(400);
@@ -362,7 +369,7 @@ describe('Cinema booking API (e2e)', () => {
       const startsAt = '2030-06-01T10:00:00Z';
       const created: string[] = [];
       for (let i = 0; i < 3; i++) {
-        const res = await http()
+        const res = await admin()
           .post('/showings')
           .send({ filmId: otherFilmId, hallId, startsAt, price: 5000 })
           .expect(201);
@@ -411,7 +418,7 @@ describe('Cinema booking API (e2e)', () => {
 
   describe('bookings', () => {
     it('POST /showings/:id/bookings books seats with total price', async () => {
-      const res = await http()
+      const res = await admin()
         .post(`/showings/${showingA}/bookings`)
         .send({
           seats: [
@@ -423,6 +430,7 @@ describe('Cinema booking API (e2e)', () => {
       expect(body<BookingBody>(res)).toEqual({
         id: expect.any(String) as string,
         showingId: showingA,
+        userId: adminId,
         seats: [
           { row: 2, seat: 3 },
           { row: 2, seat: 4 },
@@ -439,12 +447,12 @@ describe('Cinema booking API (e2e)', () => {
 
     it('validation errors -> 400, missing showing -> 404', async () => {
       const url = `/showings/${showingA}/bookings`;
-      await http().post(url).send({ seats: [] }).expect(400);
-      await http()
+      await admin().post(url).send({ seats: [] }).expect(400);
+      await admin()
         .post(url)
         .send({ seats: [{ row: 1 }] })
         .expect(400);
-      await http()
+      await admin()
         .post(url)
         .send({
           seats: [
@@ -453,19 +461,19 @@ describe('Cinema booking API (e2e)', () => {
           ],
         })
         .expect(400);
-      await http()
+      await admin()
         .post(url)
         .send({ seats: [{ row: 9, seat: 1 }] })
         .expect(400);
-      await http()
+      await admin()
         .post(url)
         .send({ seats: [{ row: 1, seat: 0 }] })
         .expect(400);
-      await http()
+      await admin()
         .post(url)
         .send({ seats: [{ row: 1.5, seat: 1 }] })
         .expect(400);
-      await http()
+      await admin()
         .post(`/showings/${MISSING_ID}/bookings`)
         .send({ seats: [{ row: 1, seat: 1 }] })
         .expect(404);
@@ -475,7 +483,7 @@ describe('Cinema booking API (e2e)', () => {
       const bookingsBefore = await count('bookings');
       const seatsBefore = await count('booking_seats');
 
-      const res = await http()
+      const res = await admin()
         .post(`/showings/${showingA}/bookings`)
         .send({
           seats: [
@@ -502,7 +510,7 @@ describe('Cinema booking API (e2e)', () => {
       const bookingsBefore = await count('bookings');
       const attempts = await Promise.all(
         Array.from({ length: 8 }, () =>
-          http()
+          admin()
             .post(`/showings/${showingB}/bookings`)
             .send({
               seats: [
@@ -523,37 +531,37 @@ describe('Cinema booking API (e2e)', () => {
       expect(await count('bookings')).toBe(bookingsBefore + 1);
 
       const winner = attempts.find((res) => res.status === 201);
-      await http()
+      await admin()
         .delete(`/bookings/${body<Entity>(winner as Response).id}`)
         .expect(204);
     });
 
     it('lists bookings and cancels a booking, freeing its seats', async () => {
-      const all = await http().get('/bookings').expect(200);
+      const all = await admin().get('/bookings').expect(200);
       expect(body<BookingBody[]>(all)).toHaveLength(1);
       expect(body<BookingBody[]>(all)[0].seats).toEqual([
         { row: 2, seat: 3 },
         { row: 2, seat: 4 },
       ]);
-      const byShowing = await http()
+      const byShowing = await admin()
         .get(`/showings/${showingA}/bookings`)
         .expect(200);
       expect(byShowing.body).toHaveLength(1);
-      const otherShowing = await http()
+      const otherShowing = await admin()
         .get(`/showings/${showingC}/bookings`)
         .expect(200);
       expect(otherShowing.body).toHaveLength(0);
-      await http().get(`/showings/${MISSING_ID}/bookings`).expect(404);
+      await admin().get(`/showings/${MISSING_ID}/bookings`).expect(404);
 
-      await http().delete(`/bookings/${bookingId}`).expect(204);
-      await http().delete(`/bookings/${bookingId}`).expect(404);
+      await admin().delete(`/bookings/${bookingId}`).expect(204);
+      await admin().delete(`/bookings/${bookingId}`).expect(404);
       // ON DELETE CASCADE removed the seat rows of the booking.
       expect(await count('booking_seats')).toBe(0);
       const seats = await http().get(`/showings/${showingA}/seats`).expect(200);
       expect(body<SeatBody[]>(seats).some((s) => s.isBooked)).toBe(false);
 
       // The freed seats can be booked again.
-      await http()
+      await admin()
         .post(`/showings/${showingA}/bookings`)
         .send({ seats: [{ row: 2, seat: 3 }] })
         .expect(201);
@@ -562,22 +570,22 @@ describe('Cinema booking API (e2e)', () => {
 
   describe('deletion rules', () => {
     it('cannot delete film or hall with showings (409 with a reason), 404 for missing', async () => {
-      const film = await http().delete(`/films/${filmId}`).expect(409);
+      const film = await admin().delete(`/films/${filmId}`).expect(409);
       expect(body<ErrorBody>(film).message).toContain('showings');
-      const hall = await http().delete(`/halls/${hallId}`).expect(409);
+      const hall = await admin().delete(`/halls/${hallId}`).expect(409);
       expect(body<ErrorBody>(hall).message).toContain('showings');
-      await http().delete(`/films/${MISSING_ID}`).expect(404);
-      await http().delete(`/halls/${MISSING_ID}`).expect(404);
+      await admin().delete(`/films/${MISSING_ID}`).expect(404);
+      await admin().delete(`/halls/${MISSING_ID}`).expect(404);
       // Nothing was cascaded.
       await http().get(`/showings/${showingA}`).expect(200);
     });
 
     it('can delete a hall without showings', async () => {
-      const hall = await http()
+      const hall = await admin()
         .post('/halls')
         .send({ name: 'Empty', rows: 1, seatsPerRow: 1 })
         .expect(201);
-      await http()
+      await admin()
         .delete(`/halls/${body<Entity>(hall).id}`)
         .expect(204);
       await http()

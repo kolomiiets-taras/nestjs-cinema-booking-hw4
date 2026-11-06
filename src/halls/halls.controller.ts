@@ -18,7 +18,11 @@ import {
   ApiOkResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { ADMIN_ONLY, ApiAuth } from '../common/decorators/api-auth.decorator';
+import { Public } from '../common/decorators/public.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
 import { ErrorResponseDto } from '../common/dto/error-response.dto';
+import { UserRole } from '../users/user-role.enum';
 import { CreateHallDto } from './dto/create-hall.dto';
 import { HallWithSeatsDto } from './dto/hall-with-seats.dto';
 import { Hall } from './entities/hall.entity';
@@ -30,6 +34,8 @@ export class HallsController {
   constructor(private readonly hallsService: HallsService) {}
 
   @Post()
+  @Roles(UserRole.Admin)
+  @ApiAuth(ADMIN_ONLY)
   @ApiCreatedResponse({ type: Hall, description: 'Зал створено' })
   @ApiBadRequestResponse({
     type: ErrorResponseDto,
@@ -43,12 +49,14 @@ export class HallsController {
     return this.hallsService.create(dto);
   }
 
+  @Public()
   @Get()
   @ApiOkResponse({ type: [Hall], description: 'Зали за назвою' })
   findAll(): Promise<Hall[]> {
     return this.hallsService.findAll();
   }
 
+  @Public()
   @Get(':id')
   @ApiOkResponse({
     type: HallWithSeatsDto,
@@ -68,6 +76,8 @@ export class HallsController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
+  @Roles(UserRole.Admin)
+  @ApiAuth(ADMIN_ONLY)
   @ApiNoContentResponse({ description: 'Зал видалено' })
   @ApiBadRequestResponse({
     type: ErrorResponseDto,

@@ -8,6 +8,12 @@ export class BookingResponseDto {
   @ApiProperty({ format: 'uuid' })
   showingId: string;
 
+  @ApiProperty({
+    format: 'uuid',
+    description: 'Власник бронювання (користувач з access-токена)',
+  })
+  userId: string;
+
   @ApiProperty({ type: [Seat] })
   seats: Seat[];
 

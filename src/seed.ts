@@ -1,3 +1,4 @@
+import * as bcrypt from 'bcrypt';
 import {
   DataSource,
   DeepPartial,
@@ -5,16 +6,19 @@ import {
   FindOptionsWhere,
   ObjectLiteral,
 } from 'typeorm';
-import dataSource from './data-source';
+import dataSource, { env } from './data-source';
 import { Film } from './films/entities/film.entity';
 import { Hall } from './halls/entities/hall.entity';
 import { BookingSeat } from './showings/entities/booking-seat.entity';
 import { Booking } from './showings/entities/booking.entity';
 import { Showing } from './showings/entities/showing.entity';
+import { User } from './users/entities/user.entity';
+import { UserRole } from './users/user-role.enum';
 
 /**
  * Fills the database with a small data set for manual checks:
- * 3 films, 2 halls, 4 showings on different dates and 1 booking.
+ * the administrator (ADMIN_EMAIL / ADMIN_PASSWORD from .env),
+ * 3 films, 2 halls, 4 showings on different dates and 1 booking of the administrator.
  * Run after migrations: `npm run seed`. Every record is looked up by its
  * natural key first, so running the script again creates no duplicates.
  */
@@ -59,9 +63,38 @@ async function findOrCreate<T extends ObjectLiteral>(
   return { record, created: true };
 }
 
+/**
+ * The first administrator. An existing account with this email keeps its
+ * password and gets the admin role; the password itself is never printed.
+ */
+async function seedAdmin(manager: EntityManager): Promise<{
+  admin: User;
+  created: boolean;
+}> {
+  const email = env.ADMIN_EMAIL.trim().toLowerCase();
+  const existing = await manager.findOneBy(User, { email });
+  if (existing) {
+    if (existing.role !== UserRole.Admin) {
+      existing.role = UserRole.Admin;
+      await manager.save(existing);
+      console.log(`Seed: user ${email} promoted to admin.`);
+    }
+    return { admin: existing, created: false };
+  }
+  const passwordHash = await bcrypt.hash(env.ADMIN_PASSWORD, env.BCRYPT_ROUNDS);
+  const admin = await manager.save(
+    manager.create(User, { email, passwordHash, role: UserRole.Admin }),
+  );
+  console.log(`Seed: admin ${email} created.`);
+  return { admin, created: true };
+}
+
 async function seed(db: DataSource): Promise<void> {
   await db.transaction(async (manager) => {
     let created = 0;
+
+    const { admin, created: adminCreated } = await seedAdmin(manager);
+    created += Number(adminCreated);
 
     const films: Film[] = [];
     for (const data of FILMS) {
@@ -112,6 +145,7 @@ async function seed(db: DataSource): Promise<void> {
       const booking = await manager.save(
         manager.create(Booking, {
           showingId: showing.id,
+          userId: admin.id,
           totalPrice: showing.price * BOOKING.seats.length,
         }),
       );

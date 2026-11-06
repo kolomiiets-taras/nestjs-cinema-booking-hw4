@@ -10,7 +10,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
     volumes:
       # Postgres 18 keeps its cluster in a versioned subdirectory of /var/lib/postgresql
-      - cinema-pgdata:/var/lib/postgresql
+      - cinema-hw4-pgdata:/var/lib/postgresql
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
       interval: 5s
@@ -18,4 +18,4 @@ services:
       retries: 10
 
 volumes:
-  cinema-pgdata:
+  cinema-hw4-pgdata:

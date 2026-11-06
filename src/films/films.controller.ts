@@ -19,7 +19,11 @@ import {
   ApiOkResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { ADMIN_ONLY, ApiAuth } from '../common/decorators/api-auth.decorator';
+import { Public } from '../common/decorators/public.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
 import { ErrorResponseDto } from '../common/dto/error-response.dto';
+import { UserRole } from '../users/user-role.enum';
 import { CreateFilmDto } from './dto/create-film.dto';
 import { UpdateFilmDto } from './dto/update-film.dto';
 import { Film } from './entities/film.entity';
@@ -31,6 +35,8 @@ export class FilmsController {
   constructor(private readonly filmsService: FilmsService) {}
 
   @Post()
+  @Roles(UserRole.Admin)
+  @ApiAuth(ADMIN_ONLY)
   @ApiCreatedResponse({ type: Film, description: 'Фільм створено' })
   @ApiBadRequestResponse({
     type: ErrorResponseDto,
@@ -40,12 +46,14 @@ export class FilmsController {
     return this.filmsService.create(dto);
   }
 
+  @Public()
   @Get()
   @ApiOkResponse({ type: [Film], description: 'Фільми за назвою' })
   findAll(): Promise<Film[]> {
     return this.filmsService.findAll();
   }
 
+  @Public()
   @Get(':id')
   @ApiOkResponse({ type: Film })
   @ApiBadRequestResponse({
@@ -61,6 +69,8 @@ export class FilmsController {
   }
 
   @Patch(':id')
+  @Roles(UserRole.Admin)
+  @ApiAuth(ADMIN_ONLY)
   @ApiOkResponse({ type: Film, description: 'Оновлений фільм' })
   @ApiBadRequestResponse({
     type: ErrorResponseDto,
@@ -79,6 +89,8 @@ export class FilmsController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
+  @Roles(UserRole.Admin)
+  @ApiAuth(ADMIN_ONLY)
   @ApiNoContentResponse({ description: 'Фільм видалено' })
   @ApiBadRequestResponse({
     type: ErrorResponseDto,

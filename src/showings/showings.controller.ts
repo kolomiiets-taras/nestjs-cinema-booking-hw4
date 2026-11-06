@@ -14,7 +14,11 @@ import {
   ApiOkResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { ADMIN_ONLY, ApiAuth } from '../common/decorators/api-auth.decorator';
+import { Public } from '../common/decorators/public.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
 import { ErrorResponseDto } from '../common/dto/error-response.dto';
+import { UserRole } from '../users/user-role.enum';
 import { BookingsService } from './bookings.service';
 import { CreateShowingDto } from './dto/create-showing.dto';
 import { SeatStateDto } from './dto/seat-state.dto';
@@ -32,6 +36,8 @@ export class ShowingsController {
   ) {}
 
   @Post()
+  @Roles(UserRole.Admin)
+  @ApiAuth(ADMIN_ONLY)
   @ApiCreatedResponse({
     type: ShowingResponseDto,
     description: 'Сеанс створено',
@@ -45,6 +51,7 @@ export class ShowingsController {
     return this.showingsService.create(dto);
   }
 
+  @Public()
   @Get()
   @ApiOkResponse({
     type: ShowingsPageDto,
@@ -60,6 +67,7 @@ export class ShowingsController {
     return this.showingsService.findAll(query);
   }
 
+  @Public()
   @Get(':id')
   @ApiOkResponse({ type: ShowingResponseDto })
   @ApiBadRequestResponse({
@@ -74,6 +82,7 @@ export class ShowingsController {
     return this.showingsService.findOneView(id);
   }
 
+  @Public()
   @Get(':id/seats')
   @ApiOkResponse({
     type: [SeatStateDto],
